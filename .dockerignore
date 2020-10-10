@@ -1,0 +1,15 @@
+.git
+.git/
+.git/*
+.git/**
+*.md
+Dockerfile*
+docker-compose.*
+data
+data/
+data/*
+data/**
+notebooks
+notebooks/
+notebooks/*
+notebooks/**
