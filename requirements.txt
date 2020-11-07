@@ -1,5 +1,6 @@
 numpy
 pandas
 torch==1.6.0
-fastai==1.0.61
+fastai==1.0.51
 pytorch-pretrained-bert
+imbalanced-learn==0.7.0
