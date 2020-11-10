@@ -1,0 +1,21 @@
+FROM paperspace/fastai:1.0-CUDA9.2-base-3.0-v1.0.6
+
+RUN apt-get update -y
+
+RUN apt-get install wget curl s3fs -y
+
+RUN mkdir /workspace
+
+WORKDIR /workspace
+
+ADD .netrc /root/.netrc
+
+ADD requirements.txt .
+
+RUN pip install -r requirements.txt
+
+ADD startup.sh .
+ADD train.py .
+
+#ENTRYPOINT ["python3", "train.py"]
+ENTRYPOINT ["bash"]

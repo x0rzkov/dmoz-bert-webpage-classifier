@@ -6,131 +6,18 @@ import pandas as pd
 from pathlib import Path
 from typing import *
 
-import coloredlogs, logging
-
-import json
-import string
-import time
-import os
-
-import tqdm
-import random_name
-
 import torch
 import torch.optim as optim
-import torch.onnx
-
-import imblearn
-from imblearn.over_sampling import RandomOverSampler, SMOTE 
-
-from pytorch_pretrained_bert.modeling import BertConfig, BertForSequenceClassification
-
+from imblearn.over_sampling import SMOTE 
 from sklearn.model_selection import train_test_split
 
 from fastai import *
-from fastai.vision import *
-from fastai.text import *
-from fastai.callbacks import *
-from fastai.metrics import *
-# from fastai.metrics import error_rate, accuracy
-
-import wandb
-from wandb.fastai import WandbCallback
-
-coloredlogs.install()
-
-END = "\033[0m"
-BOLD = "\033[1m"
-BLUE = "\033[94m"
-CYAN = "\033[96m"
-DARKCYAN = "\033[36m"
-GREEN = "\033[92m"
-PURPLE = "\033[95m"
-RED = "\033[91m"
-UNDERLINE = "\033[4m"
-YELLOW = "\033[93m"
-
-SEED = 42
-MONITOR = "accuracy"
-
-LEARNING_RATE = 3e-3
-LEARNING_RATE = slice(LEARNING_RATE)
-
-FIND_LEARNING_RATE_BUDGET = 1
-FIND_LEARNING_RATE_BUDGET = max(FIND_LEARNING_RATE_BUDGET, 1)
-
-BERT_MODEL_NAME = "bert-large-uncased", # bert-base-uncased
-SAVE_MODEL_PATH = "./models"
-BASE_MODEL = BERT_MODEL_NAME
-
-# Dataset split parameters
-DATASET_SPLIT_TRAIN = 0.8
-DATASET_SPLIT_VALID = 0.2
-DATASET_SPLIT_TEST = 0.0
-
-# Train parameters
-TRAIN_EPOCHS = 1
-TRAIN_METRIC = "error_rate"
-TRAIN_BATCH_SIZE = 64
-
-# WanDB variables
-USE_WANDB = True
-WANDB_PROJECT = "dmoz-classifier"
-WANDB_API_KEY = "36928f7b58810b2b42194a7aba61b31745385b20"
-# WANDB_USERNAME
-# WANDB_NAME
-# WANDB_NOTES
-# WANDB_BASE_URL
-# WANDB_MODE
-# WANDB_TAGS
-# WANDB_DIR
-# WANDB_RESUME
-# WANDB_RUN_ID
-# WANDB_IGNORE_GLOBS
-# WANDB_ERROR_REPORTING
-# WANDB_SHOW_RUN
-# WANDB_DOCKER
-# WANDB_DISABLE_CODE
-# WANDB_ANONYMOUS
-# WANDB_CONFIG_PATHS
-# WANDB_CONFIG_DIR
-# WANDB_NOTEBOOK_NAME
-# WANDB_HOST
-# WANDB_SILENT
-
-# setting device on GPU if available, else CPU
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print('Using device:', device)
-print()
-
-#Additional Info when using cuda
-if device.type == 'cuda':
-    print(torch.cuda.get_device_name(0))
-    print('Memory Usage:')
-    print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB')
-    print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
-
-global wandb, wandb_run
-
-if USE_WANDB:
-    wandb.init(project=WANDB_PROJECT)
-    wandb.config.allow_val_change=True
-    wandb_run = wandb.init(job_type='train')
-    wandb.config.epochs = TRAIN_EPOCHS
-    wandb.config.batch_size = TRAIN_BATCH_SIZE
-    wandb.config.entity = WANDB_ENTITY
-    wandb.config.save_code = True
-    wandb.config.name = date.today()
-
-if round(DATASET_SPLIT_TRAIN + DATASET_SPLIT_VALID + DATASET_SPLIT_TEST, 5) != 1:
-    sys.exit(
-    """SPLIT RATIOS are not valid and should be equal to 1
-    DATASET_SPLIT_TRAIN = %f
-    DATASET_SPLIT_VALID = %f
-    DATASET_SPLIT_TEST = %f
-    """
-        % (DATASET_SPLIT_TRAIN, DATASET_SPLIT_VALID, DATASET_SPLIT_TEST)
-)
+from fastai.vision.all import *
+from fastai.text.all import *
+from fastai.callback.all import *
+from fastai.torch_basics import *
+from fastai.data.all import *
+from fastai.text.core import *
 
 class Config(dict):
     def __init__(self, **kwargs):
@@ -143,8 +30,8 @@ class Config(dict):
         setattr(self, key, val)
 
 config = Config(
-    testing=False,
-    bert_model_name=BERT_MODEL_NAME,
+    testing=True,
+    bert_model_name="bert-base-uncased",
     max_lr=3e-5,
     epochs=4,
     use_fp16=True,
@@ -183,155 +70,10 @@ class FastAiBertTokenizer(BaseTokenizer):
         """Limits the maximum sequence length"""
         return ["[CLS]"] + self._pretrained_tokenizer.tokenize(t)[:self.max_seq_len - 2] + ["[SEP]"]
 
-def log(level, message):
-    message = "[%s] %s" % (level.upper(), message)
-    getattr(logging, level)(message)
-
-
-class NpEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, np.integer):
-            return int(obj)
-        elif isinstance(obj, np.floating):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        else:
-            return super(NpEncoder, self).default(obj)
-
-class ExportModelCallback(TrackerCallback):
-    "A `TrackerCallback` that saves the model when monitored quantity is best."
-    def __init__(self, learn:Learner, monitor:str='valid_loss', mode:str='auto', every:str='improvement', name:str='bestmodel', min_accuracy:float=0):
-        super().__init__(learn, monitor=monitor, mode=mode)
-        self.every,self.name = every,name
-        self.best=min_accuracy
-        if self.every not in ['improvement', 'epoch']:
-            log("warning", f'ExportModel every {self.every} is invalid, falling back to "improvement".')
-            self.every = 'improvement'
-
-    def on_epoch_end(self, epoch:int, **kwargs:Any)->None:
-        "Compare the value monitored to its best score and maybe export the model."
-        if self.every=="epoch":
-            log("info", f'ExportModel at epoch={epoch} because {self.every} found at {self.name}_{epoch}')
-            self.learn.export(f'{self.name}_{epoch}')
-        else: #every="improvement"
-            current = self.get_monitor_value()
-            if isinstance(current, Tensor): current = current.cpu()
-            if current is not None and self.operator(current, self.best):
-                log("info", f'Better model found at epoch {epoch} with {self.monitor} value: {current}. Exporting Learner {self.name}')
-                self.best = current
-                self.learn.export(f'{self.name}')
-
-    def on_train_end(self, **kwargs):
-        log("info", f'Export final epoch.')
-        name = self.name.replace('.pkl', '')
-        self.learn.export(f'{name}-final.pkl')
-
-def randomString(stringLength=8):
-    letters = string.ascii_lowercase
-    return "".join(random.choice(letters) for i in range(stringLength))
-
-def find_lr(learner, budget):
-    log("info", f"{BOLD}Exploring to find a Learning Rate{END} with {BOLD}Budget = {budget}{END}")
-    learner.fit_one_cycle(budget, max_lr=LEARNING_RATE)
-    learner.unfreeze()
-
-    try:
-        log("info", f"Looking for a good {BOLD}Learning Rate{END}")
-        learner.lr_find(stop_div=False, num_it=200)
-        #learner.lr_find()
-        fig = learner.recorder.plot(suggestion=True, return_fig=True)
-        min_grad_lr = learner.recorder.min_grad_lr
-        min_grad_lr = min_grad_lr
-        log("info", f"{BOLD}Found min_grad_lr {min_grad_lr}{END}")
-    except:
-        new_budget = budget + 2
-        log("info", f"{BOLD}Unable to find a Learning Rate{END} we will keep exploring with {BOLD}Budget = {new_budget}{END}")
-        learner, min_grad_lr, budget = find_lr(learner, new_budget)
-
-    learner.unfreeze()
-
-    return learner, min_grad_lr, budget
-
-def export_model(learner, filename):
-    learner.model.eval();
-    torch.save(learner.model, f'{filename}-default.pt')
-    torch.save(learner.model.state_dict(), f'{filename}-state_dict.pt')
-
-    torch.save(
-        {
-            "model_state_dict": learner.model.state_dict(),
-        },
-        f'{filename}-details.pt',
-    )
-
-    # for iOS app, we predict only 1 image at a time, we don't use batch
-    # creating a dummy random input for graph input layer
-    # with the following format (batch_size, nb_dimension (RGB), height, width)
-    dummy_input = torch.randn(1, 3, TRAIN_IMG_INPUT_SIZE, TRAIN_IMG_INPUT_SIZE, requires_grad=False).cuda()
-
-    log("info", f"Export {BOLD}ONNX model{END} to {BOLD}{filename}.onnx{END}")
-    torch_out = torch.onnx._export(
-                    learner.model,
-                    dummy_input, 
-                    f'{filename}.onnx',
-                    verbose=True,
-                    export_params=True
-                    )
-
-    learner.export(f'{filename}-export.pkl')
-    learner.save(f'{filename}-save')
-
-    return {'torch_default': f'{filename}-default.pt', 'onnx': f'{filename}.onnx', 'fastai_export': f'{filename}-export.pkl', 'fastai_save': f'{filename}-save.pth', 'torch_details': f'{filename}-details.pt', 'torch_state_dict': f'{filename}-state_dict.pt' }
-
-def get_class_count(df, label_column, path_column):
-    grp = df.groupby([label_column])[path_column].nunique()
-    return {key: grp[key] for key in list(grp.keys())}
-    
-def get_class_proportions(df, label_column, path_column):
-    class_counts = get_class_count(df, label_column, path_column)
-    return {val[0]: round(val[1]/df.shape[0], 4) for val in class_counts.items()}
-
-def split_df(df, validation_size, label_column, path_column):
-    
-    proportions = get_class_count(df, label_column, path_column)
-    
-    if DATASET_MAX_CLASSES_SIZE < 0:
-      max_class_count = df[label_column].value_counts().max()
-    else:
-      max_class_count = DATASET_MAX_CLASSES_SIZE
-      
-    
-    log("info", f"Analyzing classes ditribution for dataset")
-    log("info", f"{BOLD}{DARKCYAN}max_class_count = {max_class_count}{END}")
-    log("info", df[label_column].value_counts())
-    
-    log("info", f"{BOLD}Rebalancing dataset using oversampling strategy{END}")
-    oversampled_df = pd.concat([y.sample(max_class_count, replace=True) for _, y in df.groupby(label_column)])
-    log("info", oversampled_df[label_column].value_counts())
-    
-    train, validation = train_test_split(oversampled_df, test_size=validation_size, stratify=oversampled_df[label_column], random_state=SEED)
-    
-    train_class_proportions = get_class_proportions(train, label_column, path_column)
-    validation_class_proportions = get_class_proportions(validation, label_column, path_column)
-    
-    log("info", f"{BOLD}Rebalanced Train data class proportions{END} {train_class_proportions}")
-    log("info", f"{BOLD}Rebalanced Validation data class proportions{END} {validation_class_proportions}")
-    
-    train['is_valid'] = False
-    validation['is_valid'] = True
-    
-    splitted_df = pd.concat([train, validation])
-    log("info", f"{BOLD}Resulting auto-splitted dataset with stratification and rebalancing{END} {splitted_df}")
-    return splitted_df
 
 DATA_ROOT=Path('./data/')
-DATASET_TSV_FILENAME="dmoz_full_toplevel_imbalanced.tsv"
-DATASET_TSV_PATH=DATA_ROOT / DATASET_TSV_FILENAME
+df = pd.read_csv(DATA_ROOT / "dmoz_full_toplevel_imbalanced.tsv", sep='\t')
 
-log("info", f"{BOLD}Loading dataset from TSV {DATASET_TSV_PATH}{END}")
-
-df = pd.read_csv(DATASET_TSV_PATH, sep='\t')
 df = df.drop(columns=["externalpage_md5"])
 df = df.drop(columns=["ages"])
 df = df.drop(columns=["mediadate"])
@@ -350,24 +92,16 @@ try:
 except:
   pass
 
-# dataset_df.rename(
-#     columns={
-#         DATASET_CSV_COLUMN_PATH: "name",
-#         DATASET_CSV_COLUMN_LABEL: "label",
-#     },
-#     inplace=True,
-# )
-
 print(df['topic_main'].value_counts())
 print(df.head())
 
-dataset_df = split_df(dataset_df, validation_size=DATASET_SPLIT_VALID, label_column="topic_name", path_column="description")
-dataset_df.to_csv(DATASET_CSV_PATH.replace('.csv', '') + '-splitted.csv', index = False)
+import imblearn
+from imblearn.over_sampling import RandomOverSampler
 
 y = df['topic_main']
 X = df
 # X = df.drop('topic_main', axis=1)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+X_train, X_test, y_train, y_test = train_test_split(X, y,test_size=0.2)
 
 print("\nX_train:\n")
 print("\nX_train.head():\n")
@@ -380,9 +114,6 @@ print("\nX_test.head():\n")
 print(X_test.head())
 print("\nX_test.shape:\n")
 print(X_test.shape)
-
-# X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=1)
-# X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.25, random_state=1) # 0.25 x 0.8 = 0.2
 
 # before oversampling
 print("\nbefore oversampling:\n")
@@ -415,9 +146,6 @@ print(pd.Series(y_ros).value_counts()/len(y_ros))
 train=pd.concat([X_resampled,pd.get_dummies(X_resampled['topic_main'])],axis=1)
 train.sample(5)
 
-test=pd.concat([X_test,pd.get_dummies(X_test['topic_main'])],axis=1)
-test.sample(5)
-
 del df
 
 val=train
@@ -425,11 +153,11 @@ val=train
 num_labels=y_ros.nunique()
 
 if config.testing:
-    train = train.head(10240)
-    val = val.head(10240)
-    test = test.head(10240)
+    train = train.head(1024)
+    val = val.head(1024)
+    # test = test.head(1024)
 
-fastai_bert_vocab = Vocab(list(bert_tok.vocab.keys()))
+fastai_bert_vocab = make_vocab(list(bert_tok.vocab.keys()))
 fastai_tokenizer = Tokenizer(tok_func=FastAiBertTokenizer(bert_tok, max_seq_len=config.max_seq_len), pre_rules=[], post_rules=[])
 
 label_cols=y_ros.sort_values().unique().tolist()
@@ -469,8 +197,6 @@ class BertDataBunch(TextDataBunch):
         if test_df is not None: src.add_test(TextList.from_df(test_df, path, cols=text_cols))
         return src.databunch(**kwargs)
 
-start_accuracy = 0
-
 databunch = BertDataBunch.from_df(".", train, val, None,
                   tokenizer=fastai_tokenizer,
                   vocab=fastai_bert_vocab,
@@ -480,29 +206,19 @@ databunch = BertDataBunch.from_df(".", train, val, None,
                   collate_fn=partial(pad_collate, pad_first=False, pad_idx=0),
              )
 
+from pytorch_pretrained_bert.modeling import BertConfig, BertForSequenceClassification
 bert_model = BertForSequenceClassification.from_pretrained(config.bert_model_name, num_labels=num_labels)
 
 loss_func = nn.BCEWithLogitsLoss()
 
+from fastai.callbacks import *
+device_cuda = torch.device("cuda")
 learner = Learner(
     databunch, bert_model,
     loss_func=loss_func
 )
 
-best_model_path = f"best-{BASE_MODEL}" 
-log("info", f"{BOLD}Best model{END} will be saved here : {BOLD}{best_model_path}{END}")
-learner.callbacks.append(SaveModelCallback(learn, every='improvement', monitor=MONITOR, name=best_model_path))
-
-learner_export_path = os.path.join(SAVE_MODEL_PATH, f"best-{BASE_MODEL}.pkl")
-log("info", f"{BOLD}Exporting Learner{END} at {BOLD}{learner_export_path}{END}")
-learner.callbacks.append(ExportModelCallback(learner, every='improvement', monitor=MONITOR, name= learner_export_path, min_accuracy=start_accuracy))
-
-if USE_WANDB:
-    log("info", f"{BOLD}Setting WanDB{END} to {BOLD}ON{END}")
-    learner.callbacks.append(WandbCallback(learner, monitor=MONITOR))
-
 learner.model.cuda()
-
 if config.use_fp16: learner = learner.to_fp16()
 # learner.to_fp32()
 
@@ -512,12 +228,12 @@ learner.lr_find()
 
 # learner.fit_one_cycle(config.epochs, max_lr=config.max_lr)
 # learner.fit_one_cycle(config.epochs, max_lr=1e-02)
-learner.fit_one_cycle(8, max_lr=config.max_lr) # , callbacks=[SaveModelCallback(learner, every='improvement', monitor='accuracy', name='best_classifier_final')])
+learner.fit_one_cycle(12, max_lr=config.max_lr, callbacks=[SaveModelCallback(learner, every='improvement', monitor='accuracy', name='best_classifier_final')])
 
 train.catid.nunique()
 
-learner.export(file=DATA_ROOT/'dmoz_model4.pkl')
-learner.save(file=DATA_ROOT/'/dmoz_model4.pkl')
+learner.export(file=DATA_ROOT/'dmoz_model2.pkl')
+learner.save(file=DATA_ROOT/'/dmoz_model2.pkl')
 
 def get_preds_as_nparray(ds_type) -> np.ndarray:
     """

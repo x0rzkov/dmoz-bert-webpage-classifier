@@ -5,7 +5,7 @@ from pathlib import Path
 from fastai import *
 from fastai.vision import *
 from fastai.text import *
-from fastai.callbacks import *
+from fastai.callback import *
 
 class Config(dict):
     def __init__(self, **kwargs):
@@ -85,10 +85,10 @@ Mr Biden also leads vote counts in the battlegrounds of Georgia, Nevada, Pennsyl
 A Biden win would see Mr Trump leave office in January after four years.
 '''
 
-x = learn_inf.predict(text)
-y = pd.DataFrame(x[2], index=['Business', 'Home', 'Society', 'Computers', 'Science', 'Reference', 'Arts', 'Health', 'Recreation', 'Sports', 'Shopping', 'News', 'Games'])
+x = learn_inf.predict(text2)
+y = pd.DataFrame(x[2], index=['Arts', 'Business', 'Computers', 'Games', 'Health', 'Home', 'News', 'Recreation', 'Reference', 'Science', 'Shopping', 'Society', 'Sports'])
 
-print('text:', text)
+print('text:', text2)
 print(y.nlargest(5,[0]))
 
 

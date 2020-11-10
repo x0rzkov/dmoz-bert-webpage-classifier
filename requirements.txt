@@ -1,6 +1,13 @@
 numpy
 pandas
 torch==1.6.0
-fastai==1.0.51
+fastai==1.0.61
 pytorch-pretrained-bert
 imbalanced-learn==0.7.0
+tqdm
+wandb
+random_name
+Pillow
+scikit-learn
+coloredlogs
+git+https://github.com/jfilter/split-folders
