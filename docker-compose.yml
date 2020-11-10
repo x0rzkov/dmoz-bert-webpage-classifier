@@ -1,0 +1,27 @@
+---
+version: "3.8"
+services:
+
+  dmoz-bert: &hackqa_dmoz
+    container_name: ${NAMESPACE}-dmoz-bert
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+    - internal
+    volumes:
+    - .:/opt/service
+
+  dmoz-train: 
+    <<: *hackqa_dmoz    
+    container_name: ${NAMESPACE}-dmoz-bert_train
+    command: ["python3", "train.py"]
+
+  dmoz-eval: 
+    <<: *hackqa_dmoz    
+    container_name: ${NAMESPACE}-dmoz-bert_eval
+    command: ["python3", "evaluate.py"]
+
+networks:
+  internal:
+    driver: bridge
