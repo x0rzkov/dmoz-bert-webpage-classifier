@@ -6,7 +6,7 @@ services:
     container_name: ${NAMESPACE}-dmoz-bert
     build:
       context: .
-      dockerfile: Dockerfile.gpu
+      dockerfile: Dockerfile
     networks:
     - internal
     volumes:
