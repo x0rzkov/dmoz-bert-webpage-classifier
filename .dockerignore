@@ -1,7 +1,7 @@
-.git
-.git/
-.git/*
-.git/**
+#.git
+#.git/
+#.git/*
+#.git/**
 *.md
 Dockerfile*
 docker-compose.*
@@ -13,3 +13,7 @@ notebooks
 notebooks/
 notebooks/*
 notebooks/**
+models
+models/
+models/*
+models/**
